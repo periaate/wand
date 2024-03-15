@@ -4,10 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"time"
 )
+
+const ErrCode = http.StatusUnauthorized
 
 func LinkHandler(domain string, invalid ...string) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,12 +32,11 @@ func LinkHandler(domain string, invalid ...string) http.HandlerFunc {
 		defer mutex.Unlock()
 		linkMap[key] = link
 
-		// fmt.Fprintf(w, "https://%s/?action=auth&link=%s", domain, key)
 		RenderLinkIndex(w, fmt.Sprintf("https://%s/%s", domain, key), http.StatusOK, nil)
 	})
 }
 
-func SessionMW(w http.ResponseWriter, r *http.Request) {
+func SessionProxy(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Path[1:]
 
 	sessionCookie, err := r.Cookie("session")
@@ -43,9 +45,9 @@ func SessionMW(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(token) == tokSLen {
-		sessionCookie, err = auth(token)
+		sessionCookie, err = tryAuthLink(token)
 		if err != nil {
-			fmt.Println("Session token was invalid", err)
+			slog.Error("Session token was invalid", "error", err)
 			http.Error(w, "", http.StatusUnauthorized)
 			return
 		}
@@ -55,13 +57,13 @@ func SessionMW(w http.ResponseWriter, r *http.Request) {
 
 	session, err := getSession(sessionCookie.Value)
 	if err != nil {
-		fmt.Println("No such session", err)
+		slog.Error("No such session", "error", err)
 		http.Error(w, "", http.StatusUnauthorized)
 		return
 	}
 
 	if !session.IsValid() {
-		fmt.Println("Session is not valid")
+		slog.Error("Session is not valid", "error", err)
 		http.Error(w, "", http.StatusUnauthorized)
 		return
 	}
@@ -70,7 +72,7 @@ func SessionMW(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func auth(link string) (cookie *http.Cookie, err error) {
+func tryAuthLink(link string) (cookie *http.Cookie, err error) {
 	linkData, exists := linkMap[link]
 	if !exists {
 		err = fmt.Errorf("no such link")

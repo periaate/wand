@@ -37,7 +37,6 @@ type options struct {
 	Invalid []string `short:"x" long:"invalid" description:"Invalid target URLs"`
 }
 
-// main sets up the routes and starts the server.
 func main() {
 	opts = &options{}
 	_, err := gf.Parse(opts)
@@ -59,10 +58,9 @@ func main() {
 	go wand.RunSessionWorker()
 
 	go localServer()
-	startServer(http.HandlerFunc(wand.SessionMW))
+	startServer(http.HandlerFunc(wand.SessionProxy))
 }
 
-// localServer is a manager server for sessions and authentication links.
 func localServer() {
 	slog.Info("Starting link management server at", "address", "http://localhost:6060")
 	opts.Invalid = append(opts.Invalid, LinkAddress)
@@ -73,7 +71,6 @@ func startServer(h http.Handler) {
 	slog.Info("Starting server", "address", WANAddress)
 	slog.Info("Press Ctrl+C to stop gracefully...")
 
-	// go shutdown()
 	srv := &http.Server{
 		Addr:         WANAddress,
 		WriteTimeout: time.Second * 120,
@@ -88,7 +85,7 @@ func startServer(h http.Handler) {
 
 func checkTLSDir(TLSDir string) error {
 	if len(TLSDir) == 0 {
-		TLSDir = os.Getenv("TLS_DIR")
+		TLSDir = os.Getenv("WAND_TLS_DIR")
 	}
 	if len(TLSDir) != 0 {
 		if _, err := os.Stat(TLSDir); os.IsNotExist(err) {

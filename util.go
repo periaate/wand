@@ -3,11 +3,11 @@ package wand
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"math"
 
 	"golang.org/x/exp/constraints"
 )
 
+// Or returns the first result if the second is not the zero value, otherwise it returns the curried argument.
 func Or[T any, V comparable](res T, v V) func(def T) T {
 	return func(def T) T {
 		if v != *new(V) {
@@ -34,5 +34,3 @@ func keygen() string {
 	}
 	return base64.URLEncoding.EncodeToString(b)
 }
-
-func getB64Len(n int) int { return int(math.Ceil(float64(n)/3.0) * 4.0) }

@@ -2,6 +2,7 @@ package wand
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"sync"
@@ -21,10 +22,12 @@ const (
 	maxUses = 5
 	minUses = 1
 
+	// The length of the token in bytes.
 	tokBLen = 32
 )
 
-var tokSLen = getB64Len(tokBLen)
+// The b64 encoded length of a token.
+var tokSLen = int(math.Ceil(float64(tokBLen)/3.0) * 4.0)
 
 // sessionMap stores the session information.
 var sessionMap = make(map[string]sessionData)
