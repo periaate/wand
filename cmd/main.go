@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"log/slog"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/periaate/cf/dns"
+	"github.com/periaate/clmux"
 	"github.com/periaate/wand"
 
 	gf "github.com/jessevdk/go-flags"
@@ -32,9 +35,28 @@ func init() {
 }
 
 type options struct {
-	TLSDir  string   `short:"i" long:"tsldir" description:"Path to folder which contains the certificate and key files"`
-	Domain  string   `short:"d" long:"domain" description:"Domain name for the server. Needs to be the same as the certificate's domain name."`
-	Invalid []string `short:"x" long:"invalid" description:"Invalid target URLs"`
+	TLSDir       string   `short:"t" long:"tlsdir" description:"Path to folder which contains the certificate and key files"`
+	Domain       string   `short:"d" long:"domain" description:"Domain name for the server. Needs to be the same as the certificate's domain name."`
+	Invalid      []string `short:"x" long:"invalid" description:"Invalid target URLs"`
+	AutoFlareCfg bool     `long:"flare" description:"Automatically configure cloudflare records to point to current IP. Requires 'CF_API', 'CF_ZONE', 'CF_DOMAIN' env variables to be set."`
+	API          bool     `long:"api" description:"Runs the web API for link creation"`
+}
+
+func checkDNS() {
+	apiToken := os.Getenv("CF_API")
+	zoneID := os.Getenv("CF_ZONE")
+	domainName := os.Getenv("CF_DOMAIN")
+
+	api, err := dns.InitCFAPI(apiToken)
+	if err != nil {
+		log.Fatalln("Failed to initialize Cloudflare API:", err)
+	}
+
+	if err := dns.EnsureDNS(api, zoneID, domainName); err != nil {
+		log.Fatalln("error ensuring dns:", err)
+	}
+
+	fmt.Println("successfully updated DNS records")
 }
 
 func main() {
@@ -55,16 +77,88 @@ func main() {
 		domain = opts.Domain
 	}
 
+	if opts.AutoFlareCfg {
+		checkDNS()
+	}
+
+	link := clmux.MakeView("cmd", 0)
+	proxy := clmux.MakeView("proxy", clmux.DefaultMaxEntries)
+
+	mux := &clmux.Mux{
+		Input:  os.Stdin,
+		Output: os.Stdout,
+
+		Views: make(map[string]clmux.Source),
+	}
+
+	mux.Src = link
+	mux.Register(link, proxy)
+
+	proxyLogger := proxy.Slogger()
+	slog.SetDefault(proxyLogger)
+
+	opts.Invalid = append(opts.Invalid, LinkAddress)
+	fn := wand.MakeLinkFn(domain, opts.Invalid...)
+	h := wand.LinkHandler(fn)
+
+	go startCLI(link, mux, fn)
 	go wand.RunSessionWorker()
 
-	go localServer()
+	if opts.API {
+		go localServer(h)
+	}
 	startServer(http.HandlerFunc(wand.SessionProxy))
 }
 
-func localServer() {
-	slog.Info("Starting link management server at", "address", "http://localhost:6060")
-	opts.Invalid = append(opts.Invalid, LinkAddress)
-	http.ListenAndServe(LinkAddress, wand.LinkHandler(domain, opts.Invalid...))
+func startCLI(clog clmux.Logger, mux *clmux.Mux, fn wand.LinkBuilder) {
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for {
+			clog.Log("Enter command ('proxy' for http logs, 'link' to generate link):\n")
+			fmt.Println()
+			if !scanner.Scan() {
+				continue
+			}
+
+			command := scanner.Text()
+			switch command {
+			case "proxy":
+				mux.SetView("proxy")
+			case "link":
+				clog.Log("Target:\n")
+				if !scanner.Scan() {
+					continue
+				}
+				target := scanner.Text()
+				ld, err := wand.BuildLinkData(target, false, "", "", "")
+				if err != nil {
+					clog.Log(fmt.Sprint("error:", err))
+					continue
+				}
+				res, err := fn(ld)
+				if err != nil {
+					clog.Log(fmt.Sprint("error:", err))
+					continue
+				}
+
+				clog.Log("Link succesfully built\n")
+				clog.Log(res)
+				clog.Log("\n")
+				clog.Log("Press any button to continue\n")
+				scanner.Scan()
+
+			case "exit":
+				os.Exit(0)
+			default:
+				mux.SetView("cmd")
+			}
+		}
+	}()
+}
+
+func localServer(h http.HandlerFunc) {
+	slog.Info("Starting link management server at", "address", "http://"+LinkAddress)
+	http.ListenAndServe(LinkAddress, h)
 }
 
 func startServer(h http.Handler) {

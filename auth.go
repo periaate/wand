@@ -80,15 +80,28 @@ func getSession(sessionID string) (sessionData, error) {
 }
 
 func parseParams(r url.Values) (link *LinkData, err error) {
-	target := r.Get("target")
+	return BuildLinkData(
+		r.Get("target"),
+		r.Has("TLS"),
+		r.Get("expires_in"),
+		r.Get("link_uses"),
+		r.Get("ses_duration"),
+	)
+}
+
+type LinkBuilder func(link *LinkData) (res string, err error)
+
+func BuildLinkData(target string, TLS bool, expiresIn, linkUses, sesDuration string) (link *LinkData, err error) {
 	if len(target) == 0 {
 		err = fmt.Errorf("target URL not provided")
 		return
 	}
+
 	prefix := "http://"
-	if r.Has("TLS") {
+	if TLS {
 		prefix = "https://"
 	}
+
 	target = prefix + target
 	URL, err := url.Parse(target)
 	if err != nil {
@@ -96,13 +109,13 @@ func parseParams(r url.Values) (link *LinkData, err error) {
 		return
 	}
 
-	linkExpiresIn := Or(time.ParseDuration(r.Get("expires_in")))(defExpiry)
+	linkExpiresIn := Or(time.ParseDuration(expiresIn))(defExpiry)
 	linkExpiresIn = Clamp(linkExpiresIn, minDuration, maxDuration)
 
-	uses := Or(strconv.Atoi(r.Get("link_uses")))(defUses)
+	uses := Or(strconv.Atoi(linkUses))(defUses)
 	uses = Clamp(uses, minUses, maxUses)
 
-	sessionLasts := Or(time.ParseDuration(r.Get("ses_duration")))(defDuration)
+	sessionLasts := Or(time.ParseDuration(sesDuration))(defDuration)
 	sessionLasts = Clamp(sessionLasts, minDuration, maxDuration)
 
 	link = &LinkData{
@@ -113,5 +126,23 @@ func parseParams(r url.Values) (link *LinkData, err error) {
 		duration: time.Duration(sessionLasts),
 	}
 
-	return link, nil
+	return
+}
+
+func MakeLinkFn(domain string, invalid ...string) func(*LinkData) (res string, err error) {
+	return func(link *LinkData) (res string, err error) {
+		for _, inv := range invalid {
+			if inv == link.target.String() {
+				err = fmt.Errorf("invalid URL")
+				return
+			}
+		}
+
+		key := keygen()
+		mutex.Lock()
+		defer mutex.Unlock()
+		linkMap[key] = link
+
+		return fmt.Sprintf("https://%s/%s", domain, key), nil
+	}
 }

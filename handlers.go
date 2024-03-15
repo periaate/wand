@@ -6,33 +6,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
+	"os"
 	"time"
 )
 
 const ErrCode = http.StatusUnauthorized
 
-func LinkHandler(domain string, invalid ...string) http.HandlerFunc {
+func LinkHandler(linkBuilder LinkBuilder) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		link, err := parseParams(r.URL.Query())
+		ld, err := parseParams(r.URL.Query())
 		if err != nil {
+			slog.Error("error parsing parameters", "err", err)
 			RenderLinkIndex(w, "", http.StatusBadRequest, err)
-			return
 		}
-
-		for _, inv := range invalid {
-			if inv == link.target.String() {
-				RenderLinkIndex(w, "", http.StatusBadRequest, fmt.Errorf("invalid target URL"))
-				return
-			}
+		res, err := linkBuilder(ld)
+		if err != nil {
+			slog.Error("error building link", "err", err)
+			RenderLinkIndex(w, "", http.StatusBadRequest, err)
 		}
-
-		key := keygen()
-		mutex.Lock()
-		defer mutex.Unlock()
-		linkMap[key] = link
-
-		RenderLinkIndex(w, fmt.Sprintf("https://%s/%s", domain, key), http.StatusOK, nil)
+		RenderLinkIndex(w, res, http.StatusOK, nil)
 	})
 }
 
@@ -68,8 +60,12 @@ func SessionProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(session.targetURL)
-	proxy.ServeHTTP(w, r)
+	http.Redirect(w, r, getRedirectURL(), http.StatusFound)
+}
+
+func getRedirectURL() string {
+	dom := os.Getenv("WAND_DOMAIN")
+	return fmt.Sprintf("https://%s/", dom)
 }
 
 func tryAuthLink(link string) (cookie *http.Cookie, err error) {
